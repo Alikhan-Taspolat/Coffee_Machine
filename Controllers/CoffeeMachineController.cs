@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using CoffeeMachine.Models;
+using Newtonsoft.Json;
 
 namespace CoffeeMachine.Controllers
 {
@@ -15,9 +16,45 @@ namespace CoffeeMachine.Controllers
         };
         private static Statistics _statistics = new();
 
-        [HttpPost("make")]
-        public IActionResult MakeCoffee([FromBody] string recipeName)
+        private readonly IHttpClientFactory _httpClientFactory;
+        
+        public CoffeeMachineController(IHttpClientFactory httpClientFactory)
         {
+            _httpClientFactory = httpClientFactory;
+        }
+
+        private async Task<bool> IsMachineOperationalAsync()
+        {
+            var currentTime = DateTime.Now;
+
+            if (currentTime.Hour < 8 || currentTime.Hour >= 17)
+            {
+                return false;
+            }
+
+            var client = _httpClientFactory.CreateClient();
+            var response = await client.GetStringAsync("https://date.nager.at/Api/v2/PublicHolidays/2024/US");
+            var publicHolidays = JsonConvert.DeserializeObject<List<PublicHoliday>>(response);
+
+            var isHoliday = (publicHolidays ?? throw new InvalidOperationException()).Any(h => DateTime.Parse(h.Date).Date == currentTime.Date);
+
+            if (currentTime.DayOfWeek == DayOfWeek.Saturday || currentTime.DayOfWeek == DayOfWeek.Sunday || isHoliday)
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+
+        [HttpPost("make")]
+        public async Task<IActionResult> MakeCoffee([FromBody] string recipeName)
+        {
+            if (!await IsMachineOperationalAsync())
+            {
+                return BadRequest("The coffee machine is closed. It operates only from 8:00 AM to 5:00 PM on weekdays.");
+            }
+
             if (!CoffeeMachineStorage.Recipes.TryGetValue(recipeName, out var recipe))
             {
                 return NotFound($"Recipe '{recipeName}' not found.");
@@ -89,6 +126,7 @@ namespace CoffeeMachine.Controllers
 
             return Ok("Ingredients restocked successfully.");
         }
+
         
         [HttpDelete("delete-recipe/{recipeName}")]
         public IActionResult DeleteRecipe(string recipeName)
@@ -101,5 +139,15 @@ namespace CoffeeMachine.Controllers
             CoffeeMachineStorage.Recipes.Remove(recipeName);
             return Ok($"Recipe '{recipeName}' successfully deleted.");
         }
+    }
+
+    public class PublicHoliday
+    {
+        public PublicHoliday(string date)
+        {
+            Date = date;
+        }
+
+        public required string Date { get; set; }
     }
 }
